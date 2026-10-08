@@ -1,0 +1,13 @@
+langgraph>=0.2
+pymupdf>=1.24
+pymupdf4llm>=0.0.17
+zxing-cpp>=2.2
+pyzbar>=0.1.9
+pdf2image>=1.17
+Pillow>=10
+google-genai>=1.0
+pydantic>=2
+jsonschema>=4
+python-dotenv>=1.0
+azure-storage-blob==12.19.0
+mysql-connector-python==9.5.0
