@@ -829,42 +829,42 @@ def n_assemble(s: S) -> S:
     print(f"   filled {len(s['passing'])} field(s): {sorted(s['passing'])}")
     if s["pending"]:
         print(f"   left empty (unresolved): {s['pending']}")
-    _add_irn_fallback(s, cfg)
+    # _add_irn_fallback(s, cfg)
     _add_field_prompts(s, cfg)
     return {"config": cfg}
 
 
 # An IRN has the same format on every e-invoice in India (64 hex characters), so one
 # generic pattern can find it even when none of the sample invoices printed an IRN.
-IRN_FALLBACK = r"\b([0-9a-f]{64})\b"
+# IRN_FALLBACK = r"\b([0-9a-f]{64})\b"
 
 
-def _add_irn_fallback(s, cfg):
-    """Add the generic IRN pattern as the LAST regex of irn_number (vendor-specific
-    rules are tried first). Left out when, on any sample invoice, it would pick up a
-    64-character value that is not the IRN in that invoice's QR code."""
-    import re
-    if os.environ.get("IRN_FALLBACK", "1") == "0":
-        return
-    try:
-        fdef = list(cfg.values())[0].get("header", {}).get("irn_number")
-        if not isinstance(fdef, dict):
-            return
-        texts = [s.get("raw_text") or ""] + list(s.get("sibling_texts") or [])
-        qrs = [s.get("qr") or {}] + list(s.get("sibling_qrs") or [])
-        for i, text in enumerate(texts):
-            m = re.search(IRN_FALLBACK, text or "", re.I)
-            want = str(((qrs[i] if i < len(qrs) else None) or {}).get("irn") or "").strip().lower()
-            if m and want and m.group(1).lower() != want:
-                print("   generic IRN pattern NOT added: on a sample invoice it finds a "
-                      "64-character value that is not the QR's IRN")
-                return
-        rx = fdef.setdefault("regex", [])
-        if IRN_FALLBACK not in rx:
-            rx.append(IRN_FALLBACK)
-            print("   added the generic IRN pattern (64 hex characters) as last fallback")
-    except Exception as e:
-        print(f"   generic IRN pattern skipped ({type(e).__name__}: {e})")
+# def _add_irn_fallback(s, cfg):
+#     """Add the generic IRN pattern as the LAST regex of irn_number (vendor-specific
+#     rules are tried first). Left out when, on any sample invoice, it would pick up a
+#     64-character value that is not the IRN in that invoice's QR code."""
+#     import re
+#     if os.environ.get("IRN_FALLBACK", "1") == "0":
+#         return
+#     try:
+#         fdef = list(cfg.values())[0].get("header", {}).get("irn_number")
+#         if not isinstance(fdef, dict):
+#             return
+#         texts = [s.get("raw_text") or ""] + list(s.get("sibling_texts") or [])
+#         qrs = [s.get("qr") or {}] + list(s.get("sibling_qrs") or [])
+#         for i, text in enumerate(texts):
+#             m = re.search(IRN_FALLBACK, text or "", re.I)
+#             want = str(((qrs[i] if i < len(qrs) else None) or {}).get("irn") or "").strip().lower()
+#             if m and want and m.group(1).lower() != want:
+#                 print("   generic IRN pattern NOT added: on a sample invoice it finds a "
+#                       "64-character value that is not the QR's IRN")
+#                 return
+#         rx = fdef.setdefault("regex", [])
+#         if IRN_FALLBACK not in rx:
+#             rx.append(IRN_FALLBACK)
+#             print("   added the generic IRN pattern (64 hex characters) as last fallback")
+#     except Exception as e:
+#         print(f"   generic IRN pattern skipped ({type(e).__name__}: {e})")
 
 
 _PROMPT_OPTIONAL = {"po_pds_number", "vendor_code", "order_date", "irn_number"}

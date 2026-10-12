@@ -209,6 +209,14 @@ def verify_in_text(value, raw_text):
             return f"{float(s):,.2f}" in raw_text or f"{float(s):.2f}" in raw_text
         except ValueError:
             return False
+    # 64-char hex identifiers (IRN) are frequently split across a line break /
+    # whitespace in the raw text, so the CONTIGUOUS value Gemini reports won't
+    # appear as a literal substring — check it with whitespace tolerated between
+    # hex characters instead.
+    if re.fullmatch(r'[0-9A-Fa-f]{64}', s):
+        spaced_pattern = r'\s*'.join(re.escape(ch) for ch in s)
+        if re.search(spaced_pattern, raw_text, re.I):
+            return True
     return False
 
 
