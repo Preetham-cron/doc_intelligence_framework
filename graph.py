@@ -128,7 +128,9 @@ def n_qr(s: S) -> S:
     _step(3, "QR EXTRACTION (cross-check only)", "decode signed e-invoice QR")
     print(f"   seller_gstin = {qr.get('seller_gstin')} | qr_fields = {sorted(qr.keys()) if qr else 'none'}")
     print(f"   layout_hash = {lh}  (identifies the template)")
-    return {"qr": qr, "gstin": qr.get("seller_gstin") or "UNKNOWN", "layout_hash": lh}
+    from src.position_regex import gstin_from_text
+    gstin = qr.get("seller_gstin") or s.get("gstin") or gstin_from_text(s.get("raw_text")) or "UNKNOWN"
+    return {"qr": qr, "gstin": gstin, "layout_hash": lh}
 
 
 _TAX_AMT = {"total_invoice_cgst_tax_value", "total_invoice_sgst_tax_value",
@@ -157,6 +159,11 @@ def _trusted_values(raw, qr, present, forced=None, who="this invoice"):
                   ("seller_gstin", "gstin_number"), ("irn", "irn_number")):
         if qr.get(qk):
             present[f] = qr[qk]
+    if not qr.get("seller_gstin"):
+        from src.position_regex import gstin_from_text
+        sg = gstin_from_text(raw)
+        if sg:
+            present["gstin_number"] = sg
     for f, v in (forced or {}).items():
         if f not in present:
             from src.autofallback import tax_present_in

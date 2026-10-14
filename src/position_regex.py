@@ -29,6 +29,49 @@ MAX_DIST = 15                 # how many lines above/below to look for an anchor
 MAX_CANDIDATES = 6
 MAX_KEEP = 3                  # working regexes kept per field (primary + fallbacks)
 
+_NEGATIVE_LABEL = re.compile(
+    r"(bill\s*to|ship\s*to|detail\s*of\s*receiver|detail\s*of\s*consignee|buyer|consignee)",
+    re.I,
+)
+_POSITIVE_LABEL = re.compile(r"(gstin|gstn\s*no|gst\s*no|supplier|seller)", re.I)
+
+
+def gstin_from_text(raw_text: str) -> str | None:
+    """Fallback GST-number detection when no QR code is available. Finds every
+    GSTIN-shaped candidate, and for each one finds the NEAREST preceding label
+    (positive or negative) anywhere earlier in the text — not a fixed window —
+    so a label far from its GSTIN (e.g. across address lines) still counts."""
+    text = raw_text or ""
+    candidates = list(re.finditer(GSTIN_TOKEN, text))
+    if not candidates:
+        return None
+
+    neg_positions = [m.start() for m in _NEGATIVE_LABEL.finditer(text)]
+    pos_positions = [m.start() for m in _POSITIVE_LABEL.finditer(text)]
+
+    def nearest_before(label_positions, idx):
+        before = [p for p in label_positions if p < idx]
+        return max(before) if before else None   # the CLOSEST preceding label
+
+    scored = []
+    for m in candidates:
+        idx = m.start()
+        nearest_neg = nearest_before(neg_positions, idx)
+        nearest_pos = nearest_before(pos_positions, idx)
+        # Reject only if the CLOSEST preceding label is a negative one
+        # (i.e. this GSTIN is textually "inside" a buyer/consignee block).
+        if nearest_neg is not None and (nearest_pos is None or nearest_neg > nearest_pos):
+            continue
+        # Prefer candidates with a positive label closer to them, then earlier
+        # position in the document (seller block is almost always first).
+        dist = (idx - nearest_pos) if nearest_pos is not None else float("inf")
+        scored.append((dist, idx, m.group(0)))
+
+    if not scored:
+        return None
+    scored.sort()   # smallest label-distance wins; ties broken by earliest position
+    return scored[0][2]
+
 _TAX_WORDS = {                # tax label words to carry in a tax regex (specific first)
     "total_invoice_cgst_tax_value": ("CGST", "CENTRAL"),
     "total_invoice_sgst_tax_value": ("SGST", "UTGST", "STATE"),
