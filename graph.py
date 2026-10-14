@@ -67,6 +67,9 @@ class S(TypedDict, total=False):
     attempt: int
     report: list
     feedback: str
+    field_required: dict   # {field_name: bool} — dynamic, per-vendor "required", set in
+                            # n_discover from actual presence on this invoice; replaces
+                            # the old fixed schema default for THIS run (see n_assemble)
     _specs: dict
     crosscheck: dict
     config: dict
@@ -128,9 +131,7 @@ def n_qr(s: S) -> S:
     _step(3, "QR EXTRACTION (cross-check only)", "decode signed e-invoice QR")
     print(f"   seller_gstin = {qr.get('seller_gstin')} | qr_fields = {sorted(qr.keys()) if qr else 'none'}")
     print(f"   layout_hash = {lh}  (identifies the template)")
-    from src.position_regex import gstin_from_text
-    gstin = qr.get("seller_gstin") or s.get("gstin") or gstin_from_text(s.get("raw_text")) or "UNKNOWN"
-    return {"qr": qr, "gstin": gstin, "layout_hash": lh}
+    return {"qr": qr, "gstin": qr.get("seller_gstin") or "UNKNOWN", "layout_hash": lh}
 
 
 _TAX_AMT = {"total_invoice_cgst_tax_value", "total_invoice_sgst_tax_value",
@@ -159,11 +160,6 @@ def _trusted_values(raw, qr, present, forced=None, who="this invoice"):
                   ("seller_gstin", "gstin_number"), ("irn", "irn_number")):
         if qr.get(qk):
             present[f] = qr[qk]
-    if not qr.get("seller_gstin"):
-        from src.position_regex import gstin_from_text
-        sg = gstin_from_text(raw)
-        if sg:
-            present["gstin_number"] = sg
     for f, v in (forced or {}).items():
         if f not in present:
             from src.autofallback import tax_present_in
@@ -187,6 +183,21 @@ def _trusted_values(raw, qr, present, forced=None, who="this invoice"):
     dropped = [f for f in present if f not in verified and f not in nil and f not in regime_moved]
     return verified, set(nil), {"regime": regime_note, "dropped": dropped, "nil": nil,
                                 "arith": arith}
+
+
+def _compute_field_required(verified, nil):
+    """Dynamic replacement for the old FIXED required=true/false schema value: a
+    field is 'required' for THIS vendor's config if and only if discovery actually
+    found it present on the primary invoice — present (verified[f]) or present-but-
+    legitimately-zero (nil, e.g. IGST=0 on an intra-state invoice; still a real,
+    applicable field). A field discovery never found at all on the primary stays
+    required=False, so an unresolved regex for it won't block the template from
+    output/ (there's nothing to extract — see _reverify/n_assemble, the two call
+    sites that used to rely on the separate, hardcoded _OPTIONAL_FIELDS set and the
+    static FIELD_SCHEMA default respectively; both now read this same signal)."""
+    from src.assemble import CANONICAL_ORDER
+    present_fields = set(verified) | set(nil)
+    return {f: (f in present_fields) for f in CANONICAL_ORDER}
 
 
 SIBLING_CHECK = int(os.environ.get("SIBLING_CHECK", "3"))   # siblings value-checked per template
@@ -246,10 +257,12 @@ def n_discover(s: S) -> S:
                 else:
                     print(f"   sibling {names[i] if i < len(names) else i}: discovery failed ({err}); "
                           f"only a weak 'extracts something' check will be used for it")
+    field_required = _compute_field_required(verified, nil)
+
     # ---- REVIEW: re-verify the unresolved fields from the actual PDFs ----
     rv = list(s.get("reverify") or [])
     if rv:
-        _reverify(s, rv, verified, nil, truth, sibs, qrs, names, k)
+        _reverify(s, rv, verified, nil, truth, sibs, qrs, names, k, field_required)
 
     passing = {}
     pre = s.get("pre_passing") or {}
@@ -268,10 +281,9 @@ def n_discover(s: S) -> S:
     return {"present": verified, "evidence": evidence, "nil": sorted(nil),
             "trusted": dict(verified), "pending": [f for f in verified if f not in passing],
             "sibling_truth": truth, "passing": passing, "attempt": 0, "report": [],
-            "feedback": ""}
+            "feedback": "", "field_required": field_required}
 
 
-_OPTIONAL_FIELDS = {"po_pds_number", "vendor_code", "order_date", "irn_number"}
 import re as _re
 _AMT_TOKEN_RE = _re.compile(r'(?<![\d.,])\d[\d,]*(?:\.\d{1,2})?(?![\d])')
 
@@ -352,7 +364,7 @@ _QR_FIELDS = {"gstin_number": "seller_gstin", "supplier_document_number": "doc_n
               "supplier_document_date": "doc_dt", "irn_number": "irn"}
 
 
-def _reverify(s, fields, verified, nil, truth, sibs, qrs, names, k):
+def _reverify(s, fields, verified, nil, truth, sibs, qrs, names, k, field_required):
     """Send the PDFs of the primary + value-checked siblings to Gemini in ONE request
     and re-read `fields` consistently across them. Corrected values replace the
     discovered ones only if they are literally printed in that invoice's text; values
@@ -390,7 +402,7 @@ def _reverify(s, fields, verified, nil, truth, sibs, qrs, names, k):
             if f not in got:
                 continue
             new, old = got[f], vals.get(f)
-            optional = f in _OPTIONAL_FIELDS
+            optional = not field_required.get(f, False)
             if new in (None, "", "null"):
                 if old is not None and optional:
                     vals.pop(f, None)
@@ -833,6 +845,20 @@ def n_assemble(s: S) -> S:
     cfg = assemble_config(s["passing"], gstin=s["gstin"], doc_type=s["doc_type"],
                           version="V1", include_unfilled=True,
                           prompt_note=[f"Evidence-grounded. layout_hash={s['layout_hash']}."])
+    # `required` is no longer a fixed schema value (src/field_schema.py's default is
+    # only a fallback for callers that never ran discover): here it's set per field,
+    # per vendor, from whether THIS vendor's invoice actually showed that field during
+    # discovery (s["field_required"], computed in n_discover from `verified`/`nil`).
+    # A field discovery never found stays required=False -> an unresolved regex for
+    # it won't block this template from output/; a field discovery DID find but no
+    # regex could be validated for stays required=True -> correctly held in review/.
+    field_required = s.get("field_required") or {}
+    for key in cfg:
+        header = cfg[key].get("header", {})
+        for fname, block in header.items():
+            if fname in field_required and isinstance(block, dict):
+                block["required"] = field_required[fname]
+    print(f"   required (present on this invoice): {sorted(f for f, v in field_required.items() if v)}")
     print(f"   filled {len(s['passing'])} field(s): {sorted(s['passing'])}")
     if s["pending"]:
         print(f"   left empty (unresolved): {s['pending']}")

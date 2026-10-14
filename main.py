@@ -15,7 +15,7 @@ How a config is built (both modes):
   - A template already in the knowledge base is REUSED (no LLM).
   - A NEW one is solved by the agent and validated on every invoice of that template.
 """
-import os, sys, json, glob, re
+import os, sys, json, glob
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -50,7 +50,7 @@ def _qr_cached(self, blob_data, invoice_id="?", *args, **kwargs):
         _QR_CACHE[key] = _qr_uncached(self, blob_data, invoice_id, *args, **kwargs)
     return _QR_CACHE[key]
 
- 
+
 QRCodeExtractor.extract_from_blob = _qr_cached
 REVIEW_DIR = os.path.join(HERE, "review")   # templates not fully solved land here
 
@@ -232,52 +232,6 @@ def qr_code_flag(members) -> str:
     return "Yes" if with_qr * 2 >= len(members) and with_qr else "No"
 
 
-from src.position_regex import GSTIN_TOKEN
-
-_NEGATIVE_LABEL = re.compile(
-    r"(bill\s*to|ship\s*to|detail\s*of\s*receiver|detail\s*of\s*consignee|buyer|consignee)",
-    re.I,
-)
-_POSITIVE_LABEL = re.compile(r"(gstin|gstn\s*no|gst\s*no|supplier|seller)", re.I)
-
-
-def gstin_from_text(raw_text: str) -> str | None:
-    """Fallback GST-number detection when no QR code is available. Finds every
-    GSTIN-shaped candidate, and for each one finds the NEAREST preceding label
-    (positive or negative) anywhere earlier in the text — not a fixed window —
-    so a label far from its GSTIN (e.g. across address lines) still counts."""
-    text = raw_text or ""
-    candidates = list(re.finditer(GSTIN_TOKEN, text))
-    if not candidates:
-        return None
-
-    neg_positions = [m.start() for m in _NEGATIVE_LABEL.finditer(text)]
-    pos_positions = [m.start() for m in _POSITIVE_LABEL.finditer(text)]
-
-    def nearest_before(label_positions, idx):
-        before = [p for p in label_positions if p < idx]
-        return max(before) if before else None   # the CLOSEST preceding label
-
-    scored = []
-    for m in candidates:
-        idx = m.start()
-        nearest_neg = nearest_before(neg_positions, idx)
-        nearest_pos = nearest_before(pos_positions, idx)
-        # Reject only if the CLOSEST preceding label is a negative one
-        # (i.e. this GSTIN is textually "inside" a buyer/consignee block).
-        if nearest_neg is not None and (nearest_pos is None or nearest_neg > nearest_pos):
-            continue
-        # Prefer candidates with a positive label closer to them, then earlier
-        # position in the document (seller block is almost always first).
-        dist = (idx - nearest_pos) if nearest_pos is not None else float("inf")
-        scored.append((dist, idx, m.group(0)))
-
-    if not scored:
-        return None
-    scored.sort()   # smallest label-distance wins; ties broken by earliest position
-    return scored[0][2]
-
-
 def scan_invoices(pdfs):
     """Text + QR + template key for each PDF, grouped by template
     (seller GSTIN, doc type, layout hash). Sequential on purpose: PDF libraries are
@@ -301,7 +255,7 @@ def scan_invoices(pdfs):
         gstin = qr.get("seller_gstin") or GSTIN_HINT.get(name) or gstin_from_text(raw) or "UNKNOWN"
         key = (gstin, _doc_type(raw), layout_hash(raw))
         groups.setdefault(key, []).append({"name": name, "path": pdf, "raw": raw,
-                                           "qr": qr, "scanned": scanned, "gstin": gstin})
+                                           "qr": qr, "scanned": scanned})
     return groups
 
 
@@ -490,7 +444,7 @@ def run_folder(repair=False):
                   f"(validating on {len(members)-1} sibling(s); tax union: {sorted(job['forced'])})")
             final = AGENT.invoke({"pdf_path": primary["path"],
                                   "raw_text": primary["raw"], "is_scanned": primary["scanned"],
-                                  "qr": primary["qr"], "gstin": job["gstin"],
+                                  "qr": primary["qr"],
                                   "sibling_texts": [m["raw"] for m in members[1:]],
                                   "sibling_qrs": [m["qr"] for m in members[1:]],
                                   "sibling_names": [m["name"] for m in members[1:]],
@@ -884,6 +838,59 @@ def _tax_kinds(paths):
         with ThreadPoolExecutor(max_workers=workers) as ex:
             return list(ex.map(_tax_kind, paths))
     return [_tax_kind(p) for p in paths]
+
+
+_GSTIN_NEGATIVE_LABEL = None  # compiled lazily inside gstin_from_text (keeps `re` import local)
+_GSTIN_POSITIVE_LABEL = None
+
+
+def gstin_from_text(raw_text):
+    """Fallback GST-number detection for when the QR code is missing/unreadable (only
+    reached in scan_invoices() after qr.get("seller_gstin") and GSTIN_HINT.get(name)
+    have both failed — see the call site below). Finds every GSTIN-shaped candidate
+    in the text and, for each one, looks at whichever label (positive: 'GSTIN'/
+    'supplier'/'seller', or negative: 'buyer'/'consignee'/'bill to'/'ship to') is
+    NEAREST before it ANYWHERE earlier in the text — not a fixed window — so a label
+    far from its GSTIN (e.g. separated by address lines) is still correctly matched.
+    A candidate whose nearest preceding label is negative is rejected outright. Among
+    the remaining candidates, the one closest to a positive label wins (the seller's
+    GSTIN is almost always right next to an explicit 'GSTIN:' label). Returns None if
+    nothing passes — callers should then fall back to "UNKNOWN", same as today."""
+    import re
+    from src.position_regex import GSTIN_TOKEN
+    global _GSTIN_NEGATIVE_LABEL, _GSTIN_POSITIVE_LABEL
+    if _GSTIN_NEGATIVE_LABEL is None:
+        _GSTIN_NEGATIVE_LABEL = re.compile(
+            r"(bill\s*to|ship\s*to|detail\s*of\s*receiver|detail\s*of\s*consignee|buyer|consignee)",
+            re.I)
+        _GSTIN_POSITIVE_LABEL = re.compile(r"(gstin|gstn\s*no|gst\s*no|supplier|seller)", re.I)
+
+    text = raw_text or ""
+    candidates = list(re.finditer(GSTIN_TOKEN, text))
+    if not candidates:
+        return None
+
+    neg_positions = [m.start() for m in _GSTIN_NEGATIVE_LABEL.finditer(text)]
+    pos_positions = [m.start() for m in _GSTIN_POSITIVE_LABEL.finditer(text)]
+
+    def nearest_before(label_positions, idx):
+        before = [p for p in label_positions if p < idx]
+        return max(before) if before else None
+
+    scored = []
+    for m in candidates:
+        idx = m.start()
+        nearest_neg = nearest_before(neg_positions, idx)
+        nearest_pos = nearest_before(pos_positions, idx)
+        if nearest_neg is not None and (nearest_pos is None or nearest_neg > nearest_pos):
+            continue  # this GSTIN sits textually "inside" a buyer/consignee block
+        dist = (idx - nearest_pos) if nearest_pos is not None else float("inf")
+        scored.append((dist, idx, m.group(0)))
+
+    if not scored:
+        return None
+    scored.sort()  # smallest label-distance wins; ties broken by earliest position
+    return scored[0][2]
 
 
 _KIND_NAME = {"intra": "CGST/SGST", "inter": "IGST", "unknown": "no QR"}

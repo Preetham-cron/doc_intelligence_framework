@@ -180,21 +180,7 @@ block; code only validates it against the schema afterwards):
 
 Use these FIXED schema values per field (they are the same on every invoice — emit
 them exactly):
-  document_type:                datatype=string,  scope=invoice, priority=10, required=true,  validation=["non_empty"]
-  gstin_number:                 datatype=gstin,   scope=vendor,  priority=10, required=true,  validation=["gstin","gstin_checksum"], negative_alias=["Ship-From","Bill To","Ship To"]
-  po_pds_number:                datatype=string,  scope=invoice, priority=5,  required=false, validation=[]
-  order_date:                   datatype=date,    scope=invoice, priority=5,  required=false, validation=[]
-  vendor_code:                  datatype=string,  scope=invoice, priority=5,  required=false, validation=[]
-  supplier_document_number:     datatype=string,  scope=invoice, priority=10, required=true,  validation=["non_empty"]
-  supplier_document_date:       datatype=date,    scope=invoice, priority=10, required=true,  validation=["date"]
-  invoice_total_basic_value:    datatype=amount,  scope=invoice, priority=8,  required=false, validation=["numeric"]
-  total_invoice_taxable_value:  datatype=amount,  scope=invoice, priority=8,  required=false, validation=["numeric"]
-  total_invoice_igst_tax_value: datatype=amount,  scope=invoice, priority=9,  required=false, validation=["numeric"]
-  total_invoice_cgst_tax_value: datatype=amount,  scope=invoice, priority=9,  required=false, validation=["numeric"]
-  total_invoice_sgst_tax_value: datatype=amount,  scope=invoice, priority=9,  required=false, validation=["numeric"]
-  total_invoice_cess_tax_value: datatype=amount,  scope=invoice, priority=8,  required=false, validation=["numeric"]
-  total_invoice_value:          datatype=amount,  scope=invoice, priority=10, required=true,  validation=["numeric"]
-  irn_number:                   datatype=string,  scope=invoice, priority=10, required=false, validation=["non_empty"]
+{schema_table}
 
 Known TRUSTED values for THIS invoice (your specs must extract EXACTLY these):
 {trusted}
@@ -350,7 +336,9 @@ def call_gemini(raw_text, trusted, fields, hints=None, feedback="", contexts=Non
     from google.genai import types
     from src.config import load_env
     client = make_client()
+    from src.field_schema import generate_schema_table_text
     prompt = PROMPT.format(
+        schema_table=generate_schema_table_text(),
         trusted=json.dumps(trusted, indent=2),
         contexts=json.dumps(contexts or {}, indent=2),
         hints=json.dumps(hints or {}, indent=2),
